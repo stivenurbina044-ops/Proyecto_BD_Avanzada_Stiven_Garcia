@@ -1,47 +1,50 @@
+-- =====================================================
+-- 03_Funciones.sql
+-- 20 funciones almacenadas
+-- =====================================================
 USE E_commerce;
 
 DELIMITER $$
 
--- 1. Calcula el monto total de una venta especifica
+-- 1. Monto total de una venta
+DROP FUNCTION IF EXISTS fn_CalcularTotalVenta$$
 CREATE FUNCTION fn_CalcularTotalVenta(p_id_venta INT)
 RETURNS DECIMAL(12,2)
-DETERMINISTIC
-READS SQL DATA
+NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_total DECIMAL(12,2);
     SELECT SUM(cantidad * precio_unitario_congelado) INTO v_total
-    FROM detalle_ventas
-    WHERE id_venta = p_id_venta;
+    FROM detalles_ventas WHERE id_venta = p_id_venta;
     RETURN COALESCE(v_total, 0);
 END$$
 
--- 2. Valida si hay stock suficiente para un producto
+-- 2. Valida si hay stock suficiente
+DROP FUNCTION IF EXISTS fn_VerificarDisponibilidadStock$$
 CREATE FUNCTION fn_VerificarDisponibilidadStock(p_id_producto INT, p_cantidad INT)
 RETURNS BOOLEAN
-DETERMINISTIC
-READS SQL DATA
+NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_stock INT;
     SELECT stock INTO v_stock FROM productos WHERE id_producto = p_id_producto;
-    RETURN v_stock >= p_cantidad;
+    RETURN COALESCE(v_stock >= p_cantidad, FALSE);
 END$$
 
--- 3. Devuelve el precio actual de un producto
+-- 3. Precio actual de un producto
+DROP FUNCTION IF EXISTS fn_ObtenerPrecioProducto$$
 CREATE FUNCTION fn_ObtenerPrecioProducto(p_id_producto INT)
 RETURNS DECIMAL(10,2)
-DETERMINISTIC
-READS SQL DATA
+NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_precio DECIMAL(10,2);
     SELECT precio INTO v_precio FROM productos WHERE id_producto = p_id_producto;
     RETURN v_precio;
 END$$
 
--- 4. Calcula la edad de un cliente a partir de su fecha de nacimiento
+-- 4. Edad de un cliente
+DROP FUNCTION IF EXISTS fn_CalcularEdadCliente$$
 CREATE FUNCTION fn_CalcularEdadCliente(p_id_cliente INT)
 RETURNS INT
-DETERMINISTIC
-READS SQL DATA
+NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_fecha_nac DATE;
     SELECT fecha_nacimiento INTO v_fecha_nac FROM clientes WHERE id_cliente = p_id_cliente;
@@ -51,11 +54,11 @@ BEGIN
     RETURN TIMESTAMPDIFF(YEAR, v_fecha_nac, CURDATE());
 END$$
 
--- 5. Devuelve el nombre y apellido de un cliente en formato estandarizado
+-- 5. Nombre completo estandarizado
+DROP FUNCTION IF EXISTS fn_FormatearNombreCompleto$$
 CREATE FUNCTION fn_FormatearNombreCompleto(p_id_cliente INT)
 RETURNS VARCHAR(200)
-DETERMINISTIC
-READS SQL DATA
+NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_nombre_completo VARCHAR(200);
     SELECT CONCAT(apellido, ', ', nombre) INTO v_nombre_completo
@@ -63,11 +66,11 @@ BEGIN
     RETURN v_nombre_completo;
 END$$
 
--- 6. Devuelve VERDADERO si el cliente realizo su primera compra en los ultimos 30 dias
+-- 6. Cliente cuya primera compra fue en los últimos 30 días
+DROP FUNCTION IF EXISTS fn_EsClienteNuevo$$
 CREATE FUNCTION fn_EsClienteNuevo(p_id_cliente INT)
 RETURNS BOOLEAN
-DETERMINISTIC
-READS SQL DATA
+NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_primera_compra DATETIME;
     SELECT MIN(fecha_venta) INTO v_primera_compra FROM ventas WHERE id_cliente = p_id_cliente;
@@ -77,17 +80,17 @@ BEGIN
     RETURN DATEDIFF(NOW(), v_primera_compra) <= 30;
 END$$
 
--- 7. Calcula el costo de envio basado en el peso total (parametro simple, sin tabla de pesos)
+-- 7. Costo de envío según peso
+DROP FUNCTION IF EXISTS fn_CalcularCostoEnvio$$
 CREATE FUNCTION fn_CalcularCostoEnvio(p_peso_total_kg DECIMAL(10,2))
 RETURNS DECIMAL(10,2)
 DETERMINISTIC
 BEGIN
-    DECLARE v_costo DECIMAL(10,2);
-    SET v_costo = 5000 + (p_peso_total_kg * 2000);
-    RETURN v_costo;
+    RETURN 5000 + (p_peso_total_kg * 2000);
 END$$
 
--- 8. Aplica un porcentaje de descuento a un monto dado
+-- 8. Aplica un porcentaje de descuento
+DROP FUNCTION IF EXISTS fn_AplicarDescuento$$
 CREATE FUNCTION fn_AplicarDescuento(p_monto DECIMAL(12,2), p_porcentaje DECIMAL(5,2))
 RETURNS DECIMAL(12,2)
 DETERMINISTIC
@@ -95,55 +98,55 @@ BEGIN
     RETURN p_monto - (p_monto * (p_porcentaje / 100));
 END$$
 
--- 9. Devuelve la fecha de la ultima compra de un cliente
+-- 9. Fecha de la última compra
+DROP FUNCTION IF EXISTS fn_ObtenerUltimaFechaCompra$$
 CREATE FUNCTION fn_ObtenerUltimaFechaCompra(p_id_cliente INT)
 RETURNS DATETIME
-DETERMINISTIC
-READS SQL DATA
+NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_fecha DATETIME;
     SELECT MAX(fecha_venta) INTO v_fecha FROM ventas WHERE id_cliente = p_id_cliente;
     RETURN v_fecha;
 END$$
 
--- 10. Comprueba si una cadena de texto tiene formato de correo electronico valido
+-- 10. Valida formato de correo electrónico
+DROP FUNCTION IF EXISTS fn_ValidarFormatoEmail$$
 CREATE FUNCTION fn_ValidarFormatoEmail(p_email VARCHAR(150))
 RETURNS BOOLEAN
 DETERMINISTIC
 BEGIN
-    RETURN p_email REGEXP '^[A-Za-z0-9._%-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$';
+    RETURN REGEXP_LIKE(p_email, '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$', 'c');
 END$$
 
--- 11. Devuelve el nombre de la categoria a partir del ID de un producto
+-- 11. Nombre de la categoría de un producto
+DROP FUNCTION IF EXISTS fn_ObtenerNombreCategoria$$
 CREATE FUNCTION fn_ObtenerNombreCategoria(p_id_producto INT)
 RETURNS VARCHAR(100)
-DETERMINISTIC
-READS SQL DATA
+NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_nombre_categoria VARCHAR(100);
     SELECT c.nombre INTO v_nombre_categoria
-    FROM productos p
-    JOIN categorias c ON c.id_categoria = p.id_categoria
+    FROM productos p JOIN categorias c ON c.id_categoria = p.id_categoria
     WHERE p.id_producto = p_id_producto;
     RETURN v_nombre_categoria;
 END$$
 
--- 12. Cuenta el numero total de compras realizadas por un cliente
+-- 12. Número total de compras de un cliente
+DROP FUNCTION IF EXISTS fn_ContarVentasCliente$$
 CREATE FUNCTION fn_ContarVentasCliente(p_id_cliente INT)
 RETURNS INT
-DETERMINISTIC
-READS SQL DATA
+NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_total INT;
     SELECT COUNT(*) INTO v_total FROM ventas WHERE id_cliente = p_id_cliente;
     RETURN v_total;
 END$$
 
--- 13. Devuelve el numero de dias transcurridos desde la ultima compra de un cliente
+-- 13. Días desde la última compra
+DROP FUNCTION IF EXISTS fn_CalcularDiasDesdeUltimaCompra$$
 CREATE FUNCTION fn_CalcularDiasDesdeUltimaCompra(p_id_cliente INT)
 RETURNS INT
-DETERMINISTIC
-READS SQL DATA
+NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_fecha DATETIME;
     SELECT MAX(fecha_venta) INTO v_fecha FROM ventas WHERE id_cliente = p_id_cliente;
@@ -153,11 +156,11 @@ BEGIN
     RETURN DATEDIFF(NOW(), v_fecha);
 END$$
 
--- 14. Asigna un estado de lealtad (Bronce, Plata, Oro) segun el gasto total
+-- 14. Estado de lealtad (Bronce, Plata, Oro)
+DROP FUNCTION IF EXISTS fn_DeterminarEstadoLealtad$$
 CREATE FUNCTION fn_DeterminarEstadoLealtad(p_id_cliente INT)
 RETURNS VARCHAR(20)
-DETERMINISTIC
-READS SQL DATA
+NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_gasto DECIMAL(12,2);
     SELECT total_gastado INTO v_gasto FROM clientes WHERE id_cliente = p_id_cliente;
@@ -170,20 +173,20 @@ BEGIN
     END IF;
 END$$
 
--- 15. Genera un codigo de producto (SKU) unico basado en nombre y categoria
+-- 15. Genera un SKU (prefijo de categoría + nombre + número aleatorio)
+DROP FUNCTION IF EXISTS fn_GenerarSKU$$
 CREATE FUNCTION fn_GenerarSKU(p_nombre VARCHAR(150), p_id_categoria INT)
 RETURNS VARCHAR(50)
-DETERMINISTIC
-READS SQL DATA
+NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_prefijo VARCHAR(10);
-    DECLARE v_sku VARCHAR(50);
     SELECT UPPER(LEFT(nombre, 3)) INTO v_prefijo FROM categorias WHERE id_categoria = p_id_categoria;
-    SET v_sku = CONCAT('SKU-', COALESCE(v_prefijo, 'GEN'), '-', UPPER(LEFT(REPLACE(p_nombre, ' ', ''), 4)), '-', FLOOR(RAND() * 1000));
-    RETURN v_sku;
+    RETURN CONCAT('SKU-', COALESCE(v_prefijo, 'GEN'), '-',
+                  UPPER(LEFT(REPLACE(p_nombre, ' ', ''), 4)), '-', LPAD(FLOOR(RAND() * 1000), 3, '0'));
 END$$
 
--- 16. Calcula el impuesto (IVA) sobre el total de una venta
+-- 16. IVA sobre un monto
+DROP FUNCTION IF EXISTS fn_CalcularIVA$$
 CREATE FUNCTION fn_CalcularIVA(p_monto DECIMAL(12,2), p_tasa_iva DECIMAL(5,2))
 RETURNS DECIMAL(12,2)
 DETERMINISTIC
@@ -191,29 +194,29 @@ BEGIN
     RETURN ROUND(p_monto * (p_tasa_iva / 100), 2);
 END$$
 
--- 17. Suma el stock de todos los productos de una categoria
+-- 17. Stock total de una categoría
+DROP FUNCTION IF EXISTS fn_ObtenerStockTotalPorCategoria$$
 CREATE FUNCTION fn_ObtenerStockTotalPorCategoria(p_id_categoria INT)
 RETURNS INT
-DETERMINISTIC
-READS SQL DATA
+NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_total INT;
     SELECT SUM(stock) INTO v_total FROM productos WHERE id_categoria = p_id_categoria;
     RETURN COALESCE(v_total, 0);
 END$$
 
--- 18. Calcula la fecha estimada de entrega segun la ciudad del cliente
+-- 18. Fecha estimada de entrega según la ciudad del cliente
+DROP FUNCTION IF EXISTS fn_EstimarFechaEntrega$$
 CREATE FUNCTION fn_EstimarFechaEntrega(p_id_cliente INT)
 RETURNS DATE
-DETERMINISTIC
-READS SQL DATA
+NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_ciudad VARCHAR(100);
     DECLARE v_dias INT;
     SELECT ciudad INTO v_ciudad FROM clientes WHERE id_cliente = p_id_cliente;
     IF v_ciudad = 'Bucaramanga' THEN
         SET v_dias = 2;
-    ELSEIF v_ciudad IN ('Bogota','Medellin') THEN
+    ELSEIF v_ciudad IN ('Bogota', 'Medellin') THEN
         SET v_dias = 3;
     ELSE
         SET v_dias = 5;
@@ -221,7 +224,8 @@ BEGIN
     RETURN DATE_ADD(CURDATE(), INTERVAL v_dias DAY);
 END$$
 
--- 19. Convierte un monto a otra moneda usando una tasa de cambio fija
+-- 19. Conversión de moneda con tasa fija
+DROP FUNCTION IF EXISTS fn_ConvertirMoneda$$
 CREATE FUNCTION fn_ConvertirMoneda(p_monto DECIMAL(12,2), p_tasa_cambio DECIMAL(10,4))
 RETURNS DECIMAL(12,2)
 DETERMINISTIC
@@ -229,20 +233,20 @@ BEGIN
     RETURN ROUND(p_monto * p_tasa_cambio, 2);
 END$$
 
--- 20. Verifica si una contrasena cumple con criterios de seguridad (longitud, mayuscula, numero)
+-- 20. Complejidad de contraseña (longitud, mayúscula, número)
+DROP FUNCTION IF EXISTS fn_ValidarComplejidadContrasena$$
 CREATE FUNCTION fn_ValidarComplejidadContrasena(p_contrasena VARCHAR(255))
 RETURNS BOOLEAN
 DETERMINISTIC
 BEGIN
     IF LENGTH(p_contrasena) < 8 THEN
         RETURN FALSE;
-    ELSEIF p_contrasena NOT REGEXP '[A-Z]' THEN
+    ELSEIF NOT REGEXP_LIKE(p_contrasena, '[A-Z]', 'c') THEN
         RETURN FALSE;
-    ELSEIF p_contrasena NOT REGEXP '[0-9]' THEN
+    ELSEIF NOT REGEXP_LIKE(p_contrasena, '[0-9]') THEN
         RETURN FALSE;
-    ELSE
-        RETURN TRUE;
     END IF;
+    RETURN TRUE;
 END$$
 
 DELIMITER ;
