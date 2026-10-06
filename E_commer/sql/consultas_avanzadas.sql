@@ -23,7 +23,10 @@ WITH VentasPorProducto AS (
            ROW_NUMBER() OVER (ORDER BY COALESCE(SUM(dv.cantidad), 0) ASC) AS ranking,
            COUNT(*) OVER () AS total_productos
     FROM productos p
-    LEFT JOIN detalles_ventas dv ON dv.id_producto = p.id_producto
+    LEFT JOIN (SELECT d.id_producto, d.cantidad
+               FROM detalles_ventas d
+               JOIN ventas v ON v.id_venta = d.id_venta AND v.estado <> 'Cancelado') dv
+           ON dv.id_producto = p.id_producto
     GROUP BY p.id_producto, p.nombre
 )
 SELECT id_producto, nombre, unidades_vendidas
@@ -85,10 +88,10 @@ LEFT JOIN (SELECT p.id_categoria, SUM(dv.cantidad) AS unidades_vendidas
            JOIN ventas v ON v.id_venta = dv.id_venta AND v.estado <> 'Cancelado'
            GROUP BY p.id_categoria) vt ON vt.id_categoria = cat.id_categoria;
 
--- 9. Productos que Necesitan Reabastecimiento (stock menor a 10)
-SELECT id_producto, nombre, stock
+-- 9. Productos que Necesitan Reabastecimiento (stock por debajo de su stock_minimo)
+SELECT id_producto, nombre, stock, stock_minimo
 FROM productos
-WHERE stock < 10 AND activo = TRUE
+WHERE stock < stock_minimo AND activo = TRUE
 ORDER BY stock ASC;
 
 -- 10. Clientes sin compras en los últimos 30 días

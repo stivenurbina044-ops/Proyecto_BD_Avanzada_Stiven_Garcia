@@ -157,8 +157,12 @@ INSERT INTO producto_vistas (id_producto) SELECT id_producto FROM producto_vista
 INSERT INTO producto_vistas (id_producto) SELECT id_producto FROM producto_vistas;
 
 -- Acumulados de clientes (los triggers se crean después, en el script 05)
+-- El UPDATE no lleva WHERE: se desactiva el modo seguro solo para esta sentencia (error 1175 en Workbench)
+SET @safe_prev = @@SQL_SAFE_UPDATES;
+SET SQL_SAFE_UPDATES = 0;
 UPDATE clientes c
 SET total_gastado = COALESCE((SELECT SUM(v.total) FROM ventas v
                               WHERE v.id_cliente = c.id_cliente AND v.estado <> 'Cancelado'), 0),
     fecha_ultima_compra = (SELECT MAX(v.fecha_venta) FROM ventas v
                            WHERE v.id_cliente = c.id_cliente AND v.estado <> 'Cancelado');
+SET SQL_SAFE_UPDATES = @safe_prev;

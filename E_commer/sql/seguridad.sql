@@ -12,7 +12,9 @@ CREATE TABLE IF NOT EXISTS log_cambios_precio (
     precio_nuevo DECIMAL(10,2) NOT NULL,
     usuario VARCHAR(100) NOT NULL DEFAULT 'desconocido',
     fecha_cambio TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (id_producto) REFERENCES productos(id_producto) ON DELETE CASCADE
+    INDEX idx_log_precio_producto (id_producto)
+    -- Sin FOREIGN KEY a propósito: una tabla de auditoría no debe borrarse en cascada
+    -- ni impedir la purga de un producto.
 );
 
 -- Stub inicial; el script 07 lo reemplaza por la versión con parámetros y vuelve a otorgar EXECUTE
@@ -104,8 +106,11 @@ SELECT * FROM ventas WHERE id_sucursal = 1;
 -- SET GLOBAL validate_password.policy = 'MEDIUM';
 -- SET GLOBAL validate_password.length = 8;
 
--- Elimina el acceso remoto de root
-DROP USER IF EXISTS 'root'@'%';
+-- Elimina el acceso remoto de root.
+-- DESACTIVADO por defecto: si te conectas por Docker, VM o red, tu cuenta es root@'%' y al borrarla
+-- los scripts siguientes (cada 'mysql < archivo' abre una conexión nueva) fallarían al autenticarse.
+-- Ejecútalo a mano al FINAL, cuando ya exista otro usuario administrativo (por ejemplo admin_user).
+-- DROP USER IF EXISTS 'root'@'%';
 
 CREATE TABLE IF NOT EXISTS log_intentos_login (
     id_log INT AUTO_INCREMENT PRIMARY KEY,

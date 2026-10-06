@@ -1,4 +1,7 @@
+-- =====================================================
 -- 07_Procedimientos_Almacenados.sql
+-- 21 procedimientos almacenados
+-- =====================================================
 USE E_commerce;
 
 CREATE TABLE IF NOT EXISTS devoluciones (
@@ -28,18 +31,33 @@ CREATE TABLE IF NOT EXISTS resenas_producto (
 DELIMITER $$
 
 -- 1. Nueva venta (transaccional)
+--    El total de la venta lo calcula el trigger sobre detalles_ventas; el stock lo valida/descuenta otro trigger.
+--    Si el cliente estaba desactivado por inactividad, comprar lo reactiva.
 DROP PROCEDURE IF EXISTS sp_RealizarNuevaVenta$$
 CREATE PROCEDURE sp_RealizarNuevaVenta(IN p_id_cliente INT, IN p_id_producto INT, IN p_cantidad INT)
 BEGIN
     DECLARE v_precio DECIMAL(10,2);
     DECLARE v_id_venta INT;
+    DECLARE v_contrasena VARCHAR(255);
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
         ROLLBACK;
         RESIGNAL;
     END;
 
+    IF p_cantidad IS NULL OR p_cantidad <= 0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'La cantidad debe ser mayor que cero';
+    END IF;
+
     START TRANSACTION;
+
+    SELECT contrasena INTO v_contrasena FROM clientes WHERE id_cliente = p_id_cliente FOR UPDATE;
+    IF v_contrasena IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El cliente no existe';
+    ELSEIF v_contrasena = 'N/A' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'La cuenta del cliente fue eliminada';
+    END IF;
+    UPDATE clientes SET activo = TRUE WHERE id_cliente = p_id_cliente AND activo = FALSE;
 
     SELECT precio INTO v_precio FROM productos
     WHERE id_producto = p_id_producto AND activo = TRUE FOR UPDATE;
@@ -53,8 +71,6 @@ BEGIN
 
     INSERT INTO detalles_ventas (id_venta, id_producto, cantidad, precio_unitario_congelado)
     VALUES (v_id_venta, p_id_producto, p_cantidad, v_precio);
-
-    UPDATE ventas SET total = p_cantidad * v_precio WHERE id_venta = v_id_venta;
 
     COMMIT;
 END$$
@@ -76,21 +92,35 @@ BEGIN
     UPDATE clientes SET direccion_envio = p_nueva_direccion WHERE id_cliente = p_id_cliente;
 END$$
 
--- 4. Devolución de un producto (valida cantidades)
+-- 4. Devolución de un producto (solo pedidos entregados; valida cantidades, repone stock y ajusta total_gastado)
 DROP PROCEDURE IF EXISTS sp_ProcesarDevolucion$$
 CREATE PROCEDURE sp_ProcesarDevolucion(
     IN p_id_venta INT, IN p_id_producto INT, IN p_cantidad INT, IN p_motivo VARCHAR(255))
 BEGIN
     DECLARE v_comprado INT;
     DECLARE v_devuelto INT;
+    DECLARE v_estado VARCHAR(30);
+    DECLARE v_id_cliente INT;
+    DECLARE v_precio DECIMAL(10,2);
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
         ROLLBACK;
         RESIGNAL;
     END;
 
-    SELECT COALESCE(SUM(cantidad), 0) INTO v_comprado FROM detalles_ventas
-    WHERE id_venta = p_id_venta AND id_producto = p_id_producto;
+    START TRANSACTION;
+
+    SELECT estado, id_cliente INTO v_estado, v_id_cliente
+    FROM ventas WHERE id_venta = p_id_venta FOR UPDATE;   -- serializa devoluciones concurrentes de la misma venta
+
+    IF v_estado IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'La venta no existe';
+    ELSEIF v_estado <> 'Entregado' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Solo se pueden devolver productos de pedidos entregados';
+    END IF;
+
+    SELECT COALESCE(SUM(cantidad), 0), MAX(precio_unitario_congelado) INTO v_comprado, v_precio
+    FROM detalles_ventas WHERE id_venta = p_id_venta AND id_producto = p_id_producto;
     SELECT COALESCE(SUM(cantidad), 0) INTO v_devuelto FROM devoluciones
     WHERE id_venta = p_id_venta AND id_producto = p_id_producto;
 
@@ -98,10 +128,12 @@ BEGIN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Cantidad de devolucion invalida para esta venta';
     END IF;
 
-    START TRANSACTION;
     INSERT INTO devoluciones (id_venta, id_producto, cantidad, motivo)
     VALUES (p_id_venta, p_id_producto, p_cantidad, p_motivo);
     UPDATE productos SET stock = stock + p_cantidad WHERE id_producto = p_id_producto;
+    UPDATE clientes SET total_gastado = GREATEST(total_gastado - (p_cantidad * v_precio), 0)
+    WHERE id_cliente = v_id_cliente;
+
     COMMIT;
 END$$
 
@@ -118,7 +150,7 @@ BEGIN
     ORDER BY v.fecha_venta DESC;
 END$$
 
--- 6. Ajuste manual de stock
+-- 6. Ajuste manual de stock (valida que el producto exista antes de registrar el ajuste)
 DROP PROCEDURE IF EXISTS sp_AjustarNivelStock$$
 CREATE PROCEDURE sp_AjustarNivelStock(
     IN p_id_producto INT, IN p_cantidad_ajustada INT, IN p_motivo VARCHAR(255))
@@ -130,6 +162,9 @@ BEGIN
     END;
 
     START TRANSACTION;
+    IF NOT EXISTS (SELECT 1 FROM productos WHERE id_producto = p_id_producto) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El producto no existe';
+    END IF;
     UPDATE productos SET stock = stock + p_cantidad_ajustada WHERE id_producto = p_id_producto;
     INSERT INTO ajustes_inventario (id_producto, cantidad_ajustada, motivo)
     VALUES (p_id_producto, p_cantidad_ajustada, p_motivo);
@@ -159,25 +194,44 @@ BEGIN
     WHERE id_categoria = p_id_categoria;
 END$$
 
--- 9. Reporte mensual de ventas (reemplaza el stub creado en 04_Seguridad.sql)
+-- 9. Reporte mensual de ventas (reemplaza el stub creado en 04_Seguridad.sql); filtra por rango (usa índices)
 DROP PROCEDURE IF EXISTS sp_GenerarReporteMensualVentas$$
 CREATE PROCEDURE sp_GenerarReporteMensualVentas(IN p_anio INT, IN p_mes INT)
 BEGIN
+    DECLARE v_ini DATE;
+    SET v_ini = STR_TO_DATE(CONCAT(p_anio, '-', p_mes, '-01'), '%Y-%m-%d');
+    IF v_ini IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Anio o mes invalido';
+    END IF;
     SELECT v.id_venta, v.fecha_venta, c.nombre, c.apellido, v.total, v.estado
     FROM ventas v
     JOIN clientes c ON c.id_cliente = v.id_cliente
-    WHERE YEAR(v.fecha_venta) = p_anio AND MONTH(v.fecha_venta) = p_mes
+    WHERE v.fecha_venta >= v_ini AND v.fecha_venta < DATE_ADD(v_ini, INTERVAL 1 MONTH)
     ORDER BY v.fecha_venta;
 END$$
 
--- 10. Cambia el estado de un pedido
+-- 10. Cambia el estado de un pedido (valida existencia y transiciones; el stock lo repone el trigger al cancelar)
 DROP PROCEDURE IF EXISTS sp_CambiarEstadoPedido$$
 CREATE PROCEDURE sp_CambiarEstadoPedido(IN p_id_venta INT, IN p_nuevo_estado VARCHAR(30))
 BEGIN
-    UPDATE ventas SET estado = p_nuevo_estado WHERE id_venta = p_id_venta;
+    DECLARE v_actual VARCHAR(30);
+    IF p_nuevo_estado NOT IN ('Pendiente de Pago','Procesando','Enviado','Entregado','Cancelado') THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Estado de pedido invalido';
+    END IF;
+    SELECT estado INTO v_actual FROM ventas WHERE id_venta = p_id_venta;
+    IF v_actual IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'La venta no existe';
+    ELSEIF v_actual = 'Cancelado' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Un pedido cancelado no puede cambiar de estado';
+    ELSEIF v_actual = 'Entregado' AND p_nuevo_estado = 'Cancelado' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Un pedido entregado no se cancela: use sp_ProcesarDevolucion';
+    ELSE
+        UPDATE ventas SET estado = p_nuevo_estado WHERE id_venta = p_id_venta;
+    END IF;
 END$$
 
 -- 11. Registra un cliente validando que el email no exista
+--     p_contrasena debe llegar YA HASHEADA (bcrypt/Argon2) desde la aplicación; la complejidad se valida antes de hashear.
 DROP PROCEDURE IF EXISTS sp_RegistrarNuevoCliente$$
 CREATE PROCEDURE sp_RegistrarNuevoCliente(
     IN p_nombre VARCHAR(100), IN p_apellido VARCHAR(100), IN p_email VARCHAR(100),
@@ -266,18 +320,23 @@ CREATE PROCEDURE sp_ObtenerDashboardAdmin()
 BEGIN
     SELECT
         (SELECT COALESCE(SUM(total), 0) FROM ventas
-          WHERE DATE(fecha_venta) = CURDATE() AND estado <> 'Cancelado') AS ventas_hoy,
-        (SELECT COUNT(*) FROM clientes WHERE DATE(fecha_registro) = CURDATE()) AS nuevos_clientes_hoy,
+          WHERE fecha_venta >= CURDATE() AND fecha_venta < CURDATE() + INTERVAL 1 DAY
+            AND estado <> 'Cancelado') AS ventas_hoy,
+        (SELECT COUNT(*) FROM clientes
+          WHERE fecha_registro >= CURDATE() AND fecha_registro < CURDATE() + INTERVAL 1 DAY) AS nuevos_clientes_hoy,
         (SELECT COUNT(*) FROM ventas WHERE estado = 'Pendiente de Pago') AS pedidos_pendientes,
-        (SELECT COUNT(*) FROM productos WHERE stock < stock_minimo) AS productos_bajo_stock;
+        (SELECT COUNT(*) FROM productos WHERE stock < stock_minimo AND activo = TRUE) AS productos_bajo_stock;
 END$$
 
--- 17. Procesa el pago de una venta
+-- 17. Procesa el pago de una venta (avisa si la venta no existe o no estaba pendiente)
 DROP PROCEDURE IF EXISTS sp_ProcesarPago$$
 CREATE PROCEDURE sp_ProcesarPago(IN p_id_venta INT)
 BEGIN
     UPDATE ventas SET estado = 'Procesando'
     WHERE id_venta = p_id_venta AND estado = 'Pendiente de Pago';
+    IF ROW_COUNT() = 0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'La venta no existe o no esta pendiente de pago';
+    END IF;
 END$$
 
 -- 18. Reseña de un producto comprado
@@ -303,12 +362,13 @@ BEGIN
     END IF;
 END$$
 
--- 19. Productos relacionados
+-- 19. Productos relacionados (ignora ventas canceladas)
 DROP PROCEDURE IF EXISTS sp_ObtenerProductosRelacionados$$
 CREATE PROCEDURE sp_ObtenerProductosRelacionados(IN p_id_producto INT)
 BEGIN
     SELECT p.id_producto, p.nombre, COUNT(*) AS veces_comprado_junto
     FROM detalles_ventas dv1
+    JOIN ventas v ON v.id_venta = dv1.id_venta AND v.estado <> 'Cancelado'
     JOIN detalles_ventas dv2 ON dv1.id_venta = dv2.id_venta AND dv1.id_producto <> dv2.id_producto
     JOIN productos p ON p.id_producto = dv2.id_producto
     WHERE dv1.id_producto = p_id_producto
@@ -327,6 +387,17 @@ BEGIN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'La categoria destino no existe';
     ELSE
         UPDATE productos SET id_categoria = p_id_categoria_destino WHERE id_categoria = p_id_categoria_origen;
+    END IF;
+END$$
+
+-- 21. Borrado lógico de un producto (alimenta al evento evt_purge_soft_deleted_records_weekly)
+DROP PROCEDURE IF EXISTS sp_DesactivarProducto$$
+CREATE PROCEDURE sp_DesactivarProducto(IN p_id_producto INT)
+BEGIN
+    UPDATE productos SET activo = FALSE, fecha_eliminacion = NOW()
+    WHERE id_producto = p_id_producto AND fecha_eliminacion IS NULL;
+    IF ROW_COUNT() = 0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El producto no existe o ya estaba desactivado';
     END IF;
 END$$
 

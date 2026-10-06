@@ -1,6 +1,6 @@
 -- =====================================================
 -- 05_Triggers.sql
--- Tablas de apoyo y 20 triggers de validación y auditoría
+-- Tablas de apoyo y triggers de validación y auditoría
 -- =====================================================
 USE E_commerce;
 
@@ -41,14 +41,14 @@ CREATE TABLE IF NOT EXISTS log_permisos (
     fecha_cambio DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- Contador de productos por categoría (se reconstruye en cada ejecución)
+-- El contador de productos por categoría pasa a ser una VISTA: se calcula siempre desde
+-- la fuente de verdad y no puede desincronizarse (la tabla + trigger anteriores solo cubrían INSERT).
 DROP TABLE IF EXISTS contador_productos_categoria;
-CREATE TABLE contador_productos_categoria (
-    id_categoria INT PRIMARY KEY,
-    total_productos INT NOT NULL DEFAULT 0
-);
-INSERT INTO contador_productos_categoria (id_categoria, total_productos)
-SELECT id_categoria, COUNT(*) FROM productos WHERE id_categoria IS NOT NULL GROUP BY id_categoria;
+CREATE OR REPLACE VIEW v_productos_por_categoria AS
+SELECT id_categoria, COUNT(*) AS total_productos
+FROM productos
+WHERE id_categoria IS NOT NULL
+GROUP BY id_categoria;
 
 DELIMITER $$
 
@@ -60,7 +60,7 @@ FOR EACH ROW
 BEGIN
     IF OLD.precio <> NEW.precio THEN
         INSERT INTO log_cambios_precio (id_producto, precio_anterior, precio_nuevo, usuario)
-        VALUES (OLD.id_producto, OLD.precio, NEW.precio, CURRENT_USER());
+        VALUES (OLD.id_producto, OLD.precio, NEW.precio, LEFT(USER(), 100));  -- USER() = quien se conectó (CURRENT_USER() sería el definer)
     END IF;
 END$$
 
@@ -163,16 +163,53 @@ BEGIN
     SET NEW.apellido = CONCAT(UPPER(LEFT(NEW.apellido, 1)), LOWER(SUBSTRING(NEW.apellido, 2)));
 END$$
 
--- 10. Recalcula el total de la venta si se modifica un detalle
+-- 10. Mantiene ventas.total y el stock cuando cambian los detalles (INSERT, UPDATE y DELETE)
 DROP TRIGGER IF EXISTS trg_recalculate_total_venta_on_detalle_change$$
-CREATE TRIGGER trg_recalculate_total_venta_on_detalle_change
-AFTER UPDATE ON detalles_ventas
+DROP TRIGGER IF EXISTS trg_recalculate_total_venta_after_insert_detalle$$
+CREATE TRIGGER trg_recalculate_total_venta_after_insert_detalle
+AFTER INSERT ON detalles_ventas
 FOR EACH ROW
 BEGIN
     UPDATE ventas
     SET total = (SELECT COALESCE(SUM(cantidad * precio_unitario_congelado), 0)
                  FROM detalles_ventas WHERE id_venta = NEW.id_venta)
     WHERE id_venta = NEW.id_venta;
+END$$
+
+DROP TRIGGER IF EXISTS trg_recalculate_total_venta_after_update_detalle$$
+CREATE TRIGGER trg_recalculate_total_venta_after_update_detalle
+AFTER UPDATE ON detalles_ventas
+FOR EACH ROW
+BEGIN
+    DECLARE v_estado VARCHAR(30);
+    -- Ajusta el stock si cambió la cantidad o el producto (salvo en ventas canceladas, cuyo stock ya se devolvió)
+    IF OLD.cantidad <> NEW.cantidad OR OLD.id_producto <> NEW.id_producto THEN
+        SELECT estado INTO v_estado FROM ventas WHERE id_venta = NEW.id_venta;
+        IF v_estado <> 'Cancelado' THEN
+            UPDATE productos SET stock = stock + OLD.cantidad WHERE id_producto = OLD.id_producto;
+            UPDATE productos SET stock = stock - NEW.cantidad WHERE id_producto = NEW.id_producto;
+        END IF;
+    END IF;
+    UPDATE ventas
+    SET total = (SELECT COALESCE(SUM(cantidad * precio_unitario_congelado), 0)
+                 FROM detalles_ventas WHERE id_venta = NEW.id_venta)
+    WHERE id_venta = NEW.id_venta;
+END$$
+
+DROP TRIGGER IF EXISTS trg_recalculate_total_venta_after_delete_detalle$$
+CREATE TRIGGER trg_recalculate_total_venta_after_delete_detalle
+AFTER DELETE ON detalles_ventas
+FOR EACH ROW
+BEGIN
+    DECLARE v_estado VARCHAR(30);
+    SELECT estado INTO v_estado FROM ventas WHERE id_venta = OLD.id_venta;
+    IF v_estado IS NOT NULL AND v_estado <> 'Cancelado' THEN
+        UPDATE productos SET stock = stock + OLD.cantidad WHERE id_producto = OLD.id_producto;
+    END IF;
+    UPDATE ventas
+    SET total = (SELECT COALESCE(SUM(cantidad * precio_unitario_congelado), 0)
+                 FROM detalles_ventas WHERE id_venta = OLD.id_venta)
+    WHERE id_venta = OLD.id_venta;
 END$$
 
 -- 11. Audita los cambios de estado de un pedido
@@ -198,7 +235,7 @@ BEGIN
     END IF;
 END$$
 
--- 14. Archiva las ventas eliminadas
+-- 14. Archiva las ventas eliminadas y devuelve el stock (el ON DELETE CASCADE de detalles_ventas NO dispara triggers)
 DROP TRIGGER IF EXISTS trg_archive_deleted_venta$$
 CREATE TRIGGER trg_archive_deleted_venta
 BEFORE DELETE ON ventas
@@ -206,6 +243,16 @@ FOR EACH ROW
 BEGIN
     INSERT INTO ventas_archivadas (id_venta, id_cliente, fecha_venta, estado, total)
     VALUES (OLD.id_venta, OLD.id_cliente, OLD.fecha_venta, OLD.estado, OLD.total);
+
+    IF OLD.estado <> 'Cancelado' THEN
+        UPDATE productos p
+        JOIN (SELECT id_producto, SUM(cantidad) AS c
+              FROM detalles_ventas WHERE id_venta = OLD.id_venta
+              GROUP BY id_producto) d ON d.id_producto = p.id_producto
+        SET p.stock = p.stock + d.c;
+        UPDATE clientes SET total_gastado = GREATEST(total_gastado - OLD.total, 0)
+        WHERE id_cliente = OLD.id_cliente;
+    END IF;
 END$$
 
 -- 15a. Valida el formato del email al insertar un cliente
@@ -231,14 +278,40 @@ BEGIN
     END IF;
 END$$
 
--- 16. Actualiza la fecha de última compra cuando un pedido pasa a Entregado
+-- 16. Mantiene clientes.fecha_ultima_compra coherente: es la fecha de la última compra NO cancelada.
+--     (6a la fija al crear la venta; aquí se recalcula cuando una venta se cancela o se reactiva.
+--      Ya no se sobrescribe con la fecha de entrega.)
 DROP TRIGGER IF EXISTS trg_update_last_order_date_customer$$
 CREATE TRIGGER trg_update_last_order_date_customer
 AFTER UPDATE ON ventas
 FOR EACH ROW
 BEGIN
-    IF NEW.estado = 'Entregado' AND OLD.estado <> 'Entregado' THEN
-        UPDATE clientes SET fecha_ultima_compra = NOW() WHERE id_cliente = NEW.id_cliente;
+    IF OLD.estado <> NEW.estado AND (OLD.estado = 'Cancelado' OR NEW.estado = 'Cancelado') THEN
+        UPDATE clientes
+        SET fecha_ultima_compra = (SELECT MAX(fecha_venta) FROM ventas
+                                   WHERE id_cliente = NEW.id_cliente AND estado <> 'Cancelado')
+        WHERE id_cliente = NEW.id_cliente;
+    END IF;
+END$$
+
+-- 17. Devuelve el stock al cancelar un pedido (y lo vuelve a descontar si se reactiva)
+DROP TRIGGER IF EXISTS trg_restore_stock_on_cancel$$
+CREATE TRIGGER trg_restore_stock_on_cancel
+AFTER UPDATE ON ventas
+FOR EACH ROW
+BEGIN
+    IF NEW.estado = 'Cancelado' AND OLD.estado <> 'Cancelado' THEN
+        UPDATE productos p
+        JOIN (SELECT id_producto, SUM(cantidad) AS c
+              FROM detalles_ventas WHERE id_venta = NEW.id_venta
+              GROUP BY id_producto) d ON d.id_producto = p.id_producto
+        SET p.stock = p.stock + d.c;
+    ELSEIF OLD.estado = 'Cancelado' AND NEW.estado <> 'Cancelado' THEN
+        UPDATE productos p
+        JOIN (SELECT id_producto, SUM(cantidad) AS c
+              FROM detalles_ventas WHERE id_venta = NEW.id_venta
+              GROUP BY id_producto) d ON d.id_producto = p.id_producto
+        SET p.stock = p.stock - d.c;   -- si no alcanza, el CHECK (stock >= 0) rechaza la reactivación
     END IF;
 END$$
 
@@ -265,15 +338,7 @@ BEGIN
     END IF;
 END$$
 
--- 20. Contador de productos por categoría
+-- 20. (Eliminado) El contador de productos por categoría ahora es la vista v_productos_por_categoria.
 DROP TRIGGER IF EXISTS trg_update_producto_count_in_categoria$$
-CREATE TRIGGER trg_update_producto_count_in_categoria
-AFTER INSERT ON productos
-FOR EACH ROW
-BEGIN
-    INSERT INTO contador_productos_categoria (id_categoria, total_productos)
-    VALUES (NEW.id_categoria, 1)
-    ON DUPLICATE KEY UPDATE total_productos = total_productos + 1;
-END$$
 
 DELIMITER ;

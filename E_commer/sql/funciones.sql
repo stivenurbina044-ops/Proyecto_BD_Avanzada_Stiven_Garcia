@@ -73,7 +73,8 @@ RETURNS BOOLEAN
 NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_primera_compra DATETIME;
-    SELECT MIN(fecha_venta) INTO v_primera_compra FROM ventas WHERE id_cliente = p_id_cliente;
+    SELECT MIN(fecha_venta) INTO v_primera_compra FROM ventas
+    WHERE id_cliente = p_id_cliente AND estado <> 'Cancelado';
     IF v_primera_compra IS NULL THEN
         RETURN FALSE;
     END IF;
@@ -105,7 +106,8 @@ RETURNS DATETIME
 NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_fecha DATETIME;
-    SELECT MAX(fecha_venta) INTO v_fecha FROM ventas WHERE id_cliente = p_id_cliente;
+    SELECT MAX(fecha_venta) INTO v_fecha FROM ventas
+    WHERE id_cliente = p_id_cliente AND estado <> 'Cancelado';
     RETURN v_fecha;
 END$$
 
@@ -131,14 +133,15 @@ BEGIN
     RETURN v_nombre_categoria;
 END$$
 
--- 12. Número total de compras de un cliente
+-- 12. Número total de compras de un cliente (sin contar canceladas)
 DROP FUNCTION IF EXISTS fn_ContarVentasCliente$$
 CREATE FUNCTION fn_ContarVentasCliente(p_id_cliente INT)
 RETURNS INT
 NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_total INT;
-    SELECT COUNT(*) INTO v_total FROM ventas WHERE id_cliente = p_id_cliente;
+    SELECT COUNT(*) INTO v_total FROM ventas
+    WHERE id_cliente = p_id_cliente AND estado <> 'Cancelado';
     RETURN v_total;
 END$$
 
@@ -149,7 +152,8 @@ RETURNS INT
 NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_fecha DATETIME;
-    SELECT MAX(fecha_venta) INTO v_fecha FROM ventas WHERE id_cliente = p_id_cliente;
+    SELECT MAX(fecha_venta) INTO v_fecha FROM ventas
+    WHERE id_cliente = p_id_cliente AND estado <> 'Cancelado';
     IF v_fecha IS NULL THEN
         RETURN NULL;
     END IF;
@@ -163,7 +167,7 @@ RETURNS VARCHAR(20)
 NOT DETERMINISTIC READS SQL DATA
 BEGIN
     DECLARE v_gasto DECIMAL(12,2);
-    SELECT total_gastado INTO v_gasto FROM clientes WHERE id_cliente = p_id_cliente;
+    SELECT COALESCE(total_gastado, 0) INTO v_gasto FROM clientes WHERE id_cliente = p_id_cliente;
     IF v_gasto >= 1000000 THEN
         RETURN 'Oro';
     ELSEIF v_gasto >= 300000 THEN

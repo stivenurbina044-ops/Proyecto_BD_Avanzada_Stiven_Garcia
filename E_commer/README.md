@@ -8,7 +8,7 @@ Este proyecto implementa una base de datos relacional en MySQL para una tienda e
 
 - MySQL **8.0.29 o superior** (se usa `CREATE PROCEDURE IF NOT EXISTS`).
 - Un usuario con privilegios administrativos (por ejemplo `root`), ya que los scripts crean roles y usuarios y modifican variables globales.
-- Cliente SQL: MySQL Workbench o la línea de comandos de `mysql`.
+- Cliente SQL: MySQL Workbench, DBeaver o la línea de comandos de `mysql`.
 
 ## Instrucciones de ejecución
 
@@ -20,9 +20,9 @@ Los scripts deben ejecutarse **en el orden indicado**, porque cada uno depende d
 | 2 | `02_Consultas_Avanzadas.sql` | 20 consultas analíticas (top de productos, clientes VIP, cohortes, RFM, etc.). |
 | 3 | `03_Funciones.sql` | 20 funciones almacenadas (cálculo de totales, IVA, lealtad, validaciones). |
 | 4 | `04_Seguridad.sql` | Roles, usuarios, permisos, vistas de seguridad y tablas de auditoría. |
-| 5 | `05_Triggers.sql` | Agrega columnas de apoyo y crea los triggers de validación y auditoría. |
-| 6 | `06_Eventos.sql` | Tablas de reportes y 20 eventos programados (activa `event_scheduler`). |
-| 7 | `07_Procedimientos_Almacenados.sql` | 20 procedimientos almacenados (ventas, devoluciones, reportes, etc.). |
+| 5 | `05_Triggers.sql` | Crea tablas de apoyo y los triggers de validación, auditoría y consistencia de stock/totales/fechas de última compra. |
+| 6 | `06_Eventos.sql` | Tablas de reportes y eventos programados (activa `event_scheduler` y gestiona tareas automatizadas como mantenimiento de cuentas inactivas). |
+| 7 | `07_Procedimientos_Almacenados.sql` | 21 procedimientos almacenados (ventas, devoluciones, reportes, borrado lógico, etc.). |
 
 ### Desde MySQL Workbench
 
@@ -38,41 +38,3 @@ mysql -u root -p < 04_Seguridad.sql
 mysql -u root -p < 05_Triggers.sql
 mysql -u root -p < 06_Eventos.sql
 mysql -u root -p < 07_Procedimientos_Almacenados.sql
-```
-
-## Verificación rápida
-
-Después de ejecutar todos los scripts, se puede comprobar que los objetos existen:
-
-```sql
-USE E_commerce;
-SHOW TABLES;
-SHOW TRIGGERS;
-SHOW EVENTS;
-SHOW FUNCTION STATUS WHERE Db = 'E_commerce';
-SHOW PROCEDURE STATUS WHERE Db = 'E_commerce';
-```
-
-Ejemplos de prueba:
-
-```sql
-SELECT fn_CalcularTotalVenta(1);
-CALL sp_ObtenerDashboardAdmin();
-CALL sp_RealizarNuevaVenta(1, 1, 2);
-```
-
-## Modelo de datos
-
-- `categorias` y `proveedores`: catálogos de apoyo.
-- `productos`: precio, costo, stock, SKU, categoría y proveedor.
-- `clientes`: datos de contacto y dirección de envío.
-- `ventas`: encabezado de cada pedido (estado y total).
-- `detalles_ventas`: productos de cada venta, con el precio congelado al momento de comprar.
-
-## Notas de seguridad
-
-Los usuarios creados en `04_Seguridad.sql` usan la contraseña de ejemplo `CambiarEstaClave123!`. **Debe cambiarse** antes de usar la base de datos fuera de un entorno de pruebas.
-
-## Presentado por:
-Stiven Urbina
-
